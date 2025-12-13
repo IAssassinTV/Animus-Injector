@@ -5,7 +5,7 @@
 #include <filesystem>
 
 // version info
-inline constexpr std::string_view CLAUDIA_VERSION = "1.1.0";
+inline constexpr std::string_view CLAUDIA_VERSION = "0.1.0";
 inline constexpr std::string_view CLAUDIA_NAME = "Claudia";
 
 // network defaults
