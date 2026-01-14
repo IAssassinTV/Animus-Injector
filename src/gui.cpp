@@ -4,8 +4,30 @@
 #include "logger.h"
 
 #include <CommCtrl.h>
+#include <shellapi.h>
 #include <array>
 #include <format>
+
+// check if we are running with admin perms
+[[nodiscard]] bool is_elevated()
+{
+    BOOL elevated = FALSE;
+    HANDLE token = nullptr;
+
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    {
+        TOKEN_ELEVATION elevation{};
+        DWORD size = sizeof(elevation);
+
+        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size))
+        {
+            elevated = elevation.TokenIsElevated;
+        }
+        CloseHandle(token);
+    }
+
+    return elevated != FALSE;
+}
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -23,12 +45,13 @@ namespace claudia::gui
             idc_edit_password,
             idc_check_remember,
             idc_btn_launch,
-            idc_btn_cancel
+            idc_btn_cancel,
+            idc_btn_firewall
         };
 
         // layout constants
         constexpr int DIALOG_WIDTH = 320;
-        constexpr int DIALOG_HEIGHT = 200;
+        constexpr int DIALOG_HEIGHT = 235;
         constexpr int MARGIN = 12;
         constexpr int LABEL_WIDTH = 70;
         constexpr int EDIT_HEIGHT = 22;
@@ -51,6 +74,7 @@ namespace claudia::gui
         void center_window(HWND hwnd);
         bool validate_input(HWND hwnd);
         void save_settings(HWND hwnd);
+        void setup_firewall_rules();
 
         LRESULT CALLBACK dialog_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         {
@@ -75,6 +99,10 @@ namespace claudia::gui
                 case idc_btn_cancel:
                     s_dialog_result = result::cancel;
                     DestroyWindow(hwnd);
+                    return 0;
+
+                case idc_btn_firewall:
+                    setup_firewall_rules();
                     return 0;
                 }
                 break;
@@ -181,10 +209,22 @@ namespace claudia::gui
                     s_instance, nullptr))
             {
                 SendMessageW(h_check, WM_SETFONT, reinterpret_cast<WPARAM>(s_font), TRUE);
-                
+
                 const auto& settings = config::get();
-                SendMessageW(h_check, BM_SETCHECK, 
+                SendMessageW(h_check, BM_SETCHECK,
                              settings.ui.skip_config_dialog ? BST_CHECKED : BST_UNCHECKED, 0);
+            }
+            y += CHECKBOX_HEIGHT + 8;
+
+            // firewall setup button
+            if (HWND h_btn = CreateWindowW(
+                    L"BUTTON", L"Setup Firewall...",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                    MARGIN + LABEL_WIDTH + 8, y, 120, BUTTON_HEIGHT,
+                    hwnd, reinterpret_cast<HMENU>(idc_btn_firewall),
+                    s_instance, nullptr))
+            {
+                SendMessageW(h_btn, WM_SETFONT, reinterpret_cast<WPARAM>(s_font), TRUE);
             }
 
             // button positioning
@@ -286,6 +326,62 @@ namespace claudia::gui
 
             (void)config::save();
             logger::info("settings saved");
+        }
+
+        void setup_firewall_rules()
+        {
+            // get the path to ACBMP.exe
+            const auto base_path = claudia::get_base_path();
+            const auto game_path = base_path / L"ACBMP.exe";
+
+            if (!std::filesystem::exists(game_path))
+            {
+                show_error("Error", "ACBMP.exe not found. Cannot configure firewall.");
+                return;
+            }
+
+            logger::info("attempting firewall setup");
+
+            // check if running as admin
+            if (!is_elevated())
+            {
+                logger::info("not running as admin - cannot configure firewall");
+                show_info("Admin permissions are required!",
+                    "To configure firewall rules, run the game as Administrator once.\n\n"
+                    "Right click on ACBMP.exe -> Run as administrator");
+                return;
+            }
+
+            logger::info("running as admin, configuring firewall...");
+
+            // delete existing rules first
+            std::wstring delete_cmd = L"netsh advfirewall firewall delete rule name=\"_ACBMP_P2P\"";
+            _wsystem(delete_cmd.c_str());
+
+            // add inbound rule
+            std::wstring in_cmd = std::format(
+                L"netsh advfirewall firewall add rule name=\"_ACBMP_P2P\" dir=in action=allow program=\"{}\" enable=yes profile=any",
+                game_path.wstring()
+            );
+            int in_result = _wsystem(in_cmd.c_str());
+
+            // add outbound rule
+            std::wstring out_cmd = std::format(
+                L"netsh advfirewall firewall add rule name=\"_ACBMP_P2P\" dir=out action=allow program=\"{}\" enable=yes profile=any",
+                game_path.wstring()
+            );
+            int out_result = _wsystem(out_cmd.c_str());
+
+            if (in_result == 0 && out_result == 0)
+            {
+                logger::info("firewall rules configured successfully");
+                show_info("Success", "Firewall rules have been configured. Enjoy the game!");
+            }
+            else
+            {
+                logger::error(std::format("firewall setup failed: in={}, out={}", in_result, out_result));
+                show_error("Error", "Failed to configure firewall rules.");
+            }
         }
     }
 

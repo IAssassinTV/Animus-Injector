@@ -17,6 +17,20 @@ namespace
 {
     HMODULE g_module = nullptr;
 
+    [[nodiscard]] bool is_target_process()
+    {
+        wchar_t module_path[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, module_path, MAX_PATH) == 0)
+            return false;
+
+        // extract filename from path
+        const wchar_t* filename = wcsrchr(module_path, L'\\');
+        filename = filename ? filename + 1 : module_path;
+
+        // only inject into multiplayer executable
+        return _wcsicmp(filename, L"ACBMP.exe") == 0;
+    }
+
     void init()
     {
         const auto base_path = claudia::get_base_path();
@@ -133,6 +147,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, [[maybe_unused]
     {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
+
+        // early exit if not the target process
+        if (!is_target_process())
+            return TRUE;
+
         g_module = hModule;
         init();
         break;
