@@ -23,4 +23,4 @@ docker run --rm \
     "
 
 echo ""
-echo "build complete: build/$CONFIG/bin/claudia.asi"
+echo "build complete: build/$CONFIG/bin/claudia.asi + dinput8.dll"

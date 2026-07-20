@@ -66,3 +66,41 @@ add_custom_command(TARGET claudia POST_BUILD
         ${CMAKE_SOURCE_DIR}/claudia.ini
         $<TARGET_FILE_DIR:claudia>/claudia.ini
 )
+
+set(LOADER_SOURCES
+    src/loader/dllmain.cpp
+    src/loader/exports.cpp
+)
+
+add_library(loader SHARED ${LOADER_SOURCES} src/loader/exports.def)
+
+set_target_properties(loader PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "dinput8"
+)
+
+target_include_directories(loader PRIVATE
+    src
+)
+
+target_compile_definitions(loader PRIVATE
+    WIN32
+    _WINDOWS
+    _USRDLL
+    DIRECTINPUT_VERSION=0x0800
+)
+
+target_link_libraries(loader PRIVATE
+    dinput8
+)
+
+if(MSVC)
+    target_compile_options(loader PRIVATE /utf-8 /EHsc)
+    set_property(TARGET loader PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+    target_link_options(loader PRIVATE
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
+    )
+endif()

@@ -10,4 +10,4 @@ cmake -B build -G "Visual Studio 17 2022" -A Win32
 cmake --build build --config %CONFIG%
 
 echo.
-echo build complete: build\bin\%CONFIG%\claudia.asi
+echo build complete: build\bin\%CONFIG%\claudia.asi + dinput8.dll

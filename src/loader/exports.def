@@ -1,0 +1,9 @@
+EXPORTS
+    DirectInput8Create = ForwardDirectInput8Create
+    DirectInputCreateA = ForwardDirectInputCreateA
+    DirectInputCreateW = ForwardDirectInputCreateW
+    DirectInputCreateEx = ForwardDirectInputCreateEx
+    DllCanUnloadNow = ForwardDllCanUnloadNow PRIVATE
+    DllGetClassObject = ForwardDllGetClassObject PRIVATE
+    DllRegisterServer = ForwardDllRegisterServer PRIVATE
+    DllUnregisterServer = ForwardDllUnregisterServer PRIVATE
