@@ -13,6 +13,7 @@
 #include <optional>
 #include <format>
 #include <bit>
+#include <cstdint>
 #include <cstring>
 #include <ranges>
 #include <algorithm>
@@ -445,6 +446,63 @@ namespace claudia::fixes
             logger::info("cpu affinity fix applied, excluded CPU 0");
             return true;
         }
+
+        // punkbuster fix
+
+        struct pb_patch
+        {
+            std::uintptr_t rva;
+            const char* name;
+        };
+
+        constexpr std::array<std::uint8_t, 5> PB_EXPECTED_BYTES{ 0xA1, 0x20, 0x45, 0x66, 0x02 };
+        constexpr std::array<std::uint8_t, 5> PB_PATCH_BYTES{ 0x31, 0xC0, 0xC3, 0x90, 0x90 };
+
+        constexpr std::array<pb_patch, 4> PB_PATCHES{{
+            { 0x013A5CD0, "isPbSvEnabled" },
+            { 0x013A73C0, "isPbClEnabled" },
+            { 0x013A5D30, "EnablePbSv" },
+            { 0x013A7480, "EnablePbCl" },
+        }};
+
+        bool patch_punkbuster_function(std::uintptr_t base, const pb_patch& p)
+        {
+            auto* addr = reinterpret_cast<std::uint8_t*>(base + p.rva);
+
+            std::array<std::uint8_t, 5> actual{};
+            std::memcpy(actual.data(), addr, actual.size());
+
+            if (actual != PB_EXPECTED_BYTES)
+            {
+                logger::warn(std::format("punkbuster fix: byte signature mismatch at {} (0x{:X}), skipping",
+                    p.name, reinterpret_cast<std::uintptr_t>(addr)));
+                return false;
+            }
+
+            DWORD old_protect;
+            if (!VirtualProtect(addr, actual.size(), PAGE_EXECUTE_READWRITE, &old_protect))
+                return false;
+
+            std::memcpy(addr, PB_PATCH_BYTES.data(), PB_PATCH_BYTES.size());
+            VirtualProtect(addr, actual.size(), old_protect, &old_protect);
+            FlushInstructionCache(GetCurrentProcess(), addr, actual.size());
+
+            logger::info(std::format("punkbuster fix: patched {} at 0x{:X}", p.name, reinterpret_cast<std::uintptr_t>(addr)));
+            return true;
+        }
+
+        bool apply_punkbuster_fix()
+        {
+            auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            if (!base)
+                return false;
+
+            bool any = false;
+            for (const auto& p : PB_PATCHES)
+                any |= patch_punkbuster_function(base, p);
+
+            return any;
+        }
     }
 
     auto initialize() -> bool
@@ -471,6 +529,17 @@ namespace claudia::fixes
         else
         {
             logger::info("xinput detection fix disabled");
+        }
+
+        if (settings.fix.fix_disable_punkbuster)
+        {
+            logger::info("applying punkbuster fix");
+            if (!apply_punkbuster_fix())
+                logger::warn("punkbuster fix could not be applied");
+        }
+        else
+        {
+            logger::info("punkbuster fix disabled");
         }
 
         s_active = true;

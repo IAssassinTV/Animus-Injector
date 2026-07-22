@@ -32,6 +32,7 @@ namespace claudia::config
     {
         bool fix_cpu_affinity = true;
         bool fix_xinput_detection = true;
+        bool fix_disable_punkbuster = true;
     };
 
     struct settings

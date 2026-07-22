@@ -33,7 +33,7 @@ namespace claudia::config
             .net = { .redirect_host = std::string(DEFAULT_REDIRECT_HOST) },
             .log = { .enabled = true, .level = "info" },
             .ui = { .skip_config_dialog = false },
-            .fix = { .fix_cpu_affinity = true, .fix_xinput_detection = true }
+            .fix = { .fix_cpu_affinity = true, .fix_xinput_detection = true, .fix_disable_punkbuster = true }
         };
 
         return true;
@@ -86,6 +86,11 @@ namespace claudia::config
             {
                 s_settings.fix.fix_xinput_detection = parse_bool(xinput_str);
             }
+            if (std::string pb_str;
+                inipp::get_value(ini.sections["Fixes"], "FixDisablePunkBuster", pb_str))
+            {
+                s_settings.fix.fix_disable_punkbuster = parse_bool(pb_str);
+            }
 
             return true;
         }
@@ -128,6 +133,7 @@ namespace claudia::config
             file << "[Fixes]\n";
             file << std::format("FixCpuAffinity={}\n", s_settings.fix.fix_cpu_affinity ? "true" : "false");
             file << std::format("FixXInputDetection={}\n", s_settings.fix.fix_xinput_detection ? "true" : "false");
+            file << std::format("FixDisablePunkBuster={}\n", s_settings.fix.fix_disable_punkbuster ? "true" : "false");
 
             return true;
         }
