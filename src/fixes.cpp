@@ -455,7 +455,8 @@ namespace claudia::fixes
             const char* name;
         };
 
-        constexpr std::array<std::uint8_t, 5> PB_EXPECTED_BYTES{ 0xA1, 0x20, 0x45, 0x66, 0x02 };
+        constexpr std::uint8_t PB_OPCODE = 0xA1;
+        constexpr std::uintptr_t PB_STATE_DATA_RVA = 0x02264520;
         constexpr std::array<std::uint8_t, 5> PB_PATCH_BYTES{ 0x31, 0xC0, 0xC3, 0x90, 0x90 };
 
         constexpr std::array<pb_patch, 4> PB_PATCHES{{
@@ -465,30 +466,47 @@ namespace claudia::fixes
             { 0x013A7480, "EnablePbCl" },
         }};
 
+        constexpr std::array<std::ptrdiff_t, 2> PB_RVA_VARIANTS{ 0, -5 };
+
         bool patch_punkbuster_function(std::uintptr_t base, const pb_patch& p)
         {
-            auto* addr = reinterpret_cast<std::uint8_t*>(base + p.rva);
+            std::array<std::uint8_t, 5> expected{};
+            expected[0] = PB_OPCODE;
+            auto data_va = static_cast<std::uint32_t>(base + PB_STATE_DATA_RVA);
+            std::memcpy(expected.data() + 1, &data_va, sizeof(data_va));
 
-            std::array<std::uint8_t, 5> actual{};
-            std::memcpy(actual.data(), addr, actual.size());
+            std::array<std::uint8_t, 5> first_seen{};
 
-            if (actual != PB_EXPECTED_BYTES)
+            for (std::size_t i = 0; i < PB_RVA_VARIANTS.size(); ++i)
             {
-                logger::warn(std::format("punkbuster fix: byte signature mismatch at {} (0x{:X}), skipping",
-                    p.name, reinterpret_cast<std::uintptr_t>(addr)));
-                return false;
+                auto* addr = reinterpret_cast<std::uint8_t*>(base + p.rva + PB_RVA_VARIANTS[i]);
+
+                std::array<std::uint8_t, 5> actual{};
+                std::memcpy(actual.data(), addr, actual.size());
+
+                if (i == 0)
+                    first_seen = actual;
+
+                if (actual != expected)
+                    continue;
+
+                DWORD old_protect;
+                if (!VirtualProtect(addr, actual.size(), PAGE_EXECUTE_READWRITE, &old_protect))
+                    return false;
+
+                std::memcpy(addr, PB_PATCH_BYTES.data(), PB_PATCH_BYTES.size());
+                VirtualProtect(addr, actual.size(), old_protect, &old_protect);
+                FlushInstructionCache(GetCurrentProcess(), addr, actual.size());
+
+                logger::info(std::format("punkbuster fix: patched {} at 0x{:X}", p.name, reinterpret_cast<std::uintptr_t>(addr)));
+                return true;
             }
 
-            DWORD old_protect;
-            if (!VirtualProtect(addr, actual.size(), PAGE_EXECUTE_READWRITE, &old_protect))
-                return false;
-
-            std::memcpy(addr, PB_PATCH_BYTES.data(), PB_PATCH_BYTES.size());
-            VirtualProtect(addr, actual.size(), old_protect, &old_protect);
-            FlushInstructionCache(GetCurrentProcess(), addr, actual.size());
-
-            logger::info(std::format("punkbuster fix: patched {} at 0x{:X}", p.name, reinterpret_cast<std::uintptr_t>(addr)));
-            return true;
+            logger::warn(std::format("punkbuster fix: byte signature mismatch for {}, expected {:02X} {:02X} {:02X} {:02X} {:02X}, found {:02X} {:02X} {:02X} {:02X} {:02X}",
+                p.name,
+                expected[0], expected[1], expected[2], expected[3], expected[4],
+                first_seen[0], first_seen[1], first_seen[2], first_seen[3], first_seen[4]));
+            return false;
         }
 
         bool apply_punkbuster_fix()
