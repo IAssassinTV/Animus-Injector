@@ -10,7 +10,7 @@ This is a mini launcher for multiplayer mode of Assassin's Creed Brotherhood.
 - Supports Digital (Steam/Uplay) and Retail (1.03 WW/CZ/RU)
 
 ## Installation
-- Grab the latest release from the [releases page](https://github.com/siohaza/claudia/releases)
+- Grab the latest release from the [releases page](https://github.com/IAssassinTV/Claudia/releases)
 - Extract the contents of the archive in to the the game folder. (e.g. "**steamapps\common\Assassins Creed Brotherhood**" for Steam).
 
 ## Configuration
