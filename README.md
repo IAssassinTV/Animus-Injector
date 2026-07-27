@@ -7,6 +7,7 @@ This is a mini launcher for multiplayer mode of Assassin's Creed Brotherhood.
 - Redirects from Ubisoft servers to AnimusNetwork's
 - Fixes modern controllers by enforcing Xinput (say goodbye to x360ce!)
 - Fixes CPU affinity
+- Enforces PunkBuster to be disabled
 - Supports Digital (Steam/Uplay) and Retail (1.03 WW/CZ/RU)
 
 ## Installation
