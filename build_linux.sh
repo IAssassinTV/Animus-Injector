@@ -11,7 +11,7 @@ PROJECT_DIR="$(pwd)"
 IMAGE="registry.gitlab.com/superewald/llwin:17-debug-wine"
 CONFIG="${1:-Release}"
 
-echo "building claudia ($CONFIG) in $PROJECT_DIR..."
+echo "building Animus Injector ($CONFIG) in $PROJECT_DIR..."
 
 docker run --rm \
     -v "$PROJECT_DIR:/src" \
@@ -23,4 +23,4 @@ docker run --rm \
     "
 
 echo ""
-echo "build complete: build/$CONFIG/bin/claudia.asi + dinput8.dll"
+echo "build complete: build/$CONFIG/bin/AnimusInjector.asi + dinput8.dll"

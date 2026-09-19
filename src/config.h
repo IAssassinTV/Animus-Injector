@@ -3,8 +3,16 @@
 #include <string>
 #include <filesystem>
 
-namespace claudia::config
+namespace animus_injector::config
 {
+    enum class game
+    {
+        acb,
+        acr,
+        ac3,
+        unknown
+    };
+
     struct credentials
     {
         std::string username;
@@ -23,16 +31,12 @@ namespace claudia::config
         std::string level = "info";
     };
 
-    struct ui_settings
-    {
-        bool skip_config_dialog = false;
-    };
-
     struct fix_settings
     {
         bool fix_cpu_affinity = true;
-        bool fix_xinput_detection = true;
-        bool fix_disable_punkbuster = true;
+        bool fix_xinput_detection = false;
+        bool fix_disable_punkbuster = false;
+        bool fix_skip_intro_videos = false;
     };
 
     struct settings
@@ -40,14 +44,15 @@ namespace claudia::config
         credentials creds;
         network_settings net;
         logging_settings log;
-        ui_settings ui;
         fix_settings fix;
     };
 
     [[nodiscard]] auto initialize(const std::filesystem::path& config_path) -> bool;
+    [[nodiscard]] auto was_created() -> bool;
     [[nodiscard]] auto load() -> bool;
     [[nodiscard]] auto save() -> bool;
     [[nodiscard]] auto get() -> settings&;
     [[nodiscard]] auto exists() -> bool;
     [[nodiscard]] auto get_path() -> const std::filesystem::path&;
+    [[nodiscard]] auto get_game() -> game;
 }

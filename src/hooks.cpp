@@ -1,5 +1,5 @@
 #include "hooks.h"
-#include "claudia.h"
+#include "animus_injector.h"
 #include "config.h"
 #include "logger.h"
 
@@ -17,7 +17,7 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-namespace claudia::hooks
+namespace animus_injector::hooks
 {
     namespace
     {

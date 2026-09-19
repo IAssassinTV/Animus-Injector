@@ -1,5 +1,5 @@
 #include "logger.h"
-#include "claudia.h"
+#include "animus_injector.h"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -8,7 +8,7 @@
 #include <memory>
 #include <unordered_map>
 
-namespace claudia::logger
+namespace animus_injector::logger
 {
     namespace
     {
@@ -34,13 +34,13 @@ namespace claudia::logger
 
         try
         {
-            s_logger = spdlog::basic_logger_mt("claudia", log_path.string(), true);
+            s_logger = spdlog::basic_logger_mt("AnimusInjector", log_path.string(), true);
             s_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
             s_logger->flush_on(spdlog::level::debug);
             s_logger->set_level(get_log_level(level));
 
             s_logger->info("logger initialized");
-            s_logger->info(std::format("{} v{}", CLAUDIA_NAME, CLAUDIA_VERSION));
+            s_logger->info(std::format("{} v{}", ANIMUS_INJECTOR_NAME, ANIMUS_INJECTOR_VERSION));
             s_logger->info(std::format("log level: {}", level));
 
             return true;
@@ -57,7 +57,7 @@ namespace claudia::logger
         {
             s_logger->info("logger shutting down");
             s_logger->flush();
-            spdlog::drop("claudia");
+            spdlog::drop("AnimusInjector");
             s_logger.reset();
         }
     }

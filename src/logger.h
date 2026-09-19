@@ -4,7 +4,7 @@
 #include <string_view>
 #include <filesystem>
 
-namespace claudia::logger
+namespace animus_injector::logger
 {
     [[nodiscard]] auto initialize(const std::filesystem::path& log_path, 
                                   bool enabled, 

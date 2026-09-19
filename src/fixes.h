@@ -1,6 +1,6 @@
 #pragma once
 
-namespace claudia::fixes
+namespace animus_injector::fixes
 {
     [[nodiscard]] auto initialize() -> bool;
     auto shutdown() -> void;

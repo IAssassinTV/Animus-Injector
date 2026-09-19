@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(claudia LANGUAGES CXX C)
+project(animus_injector LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,30 +11,28 @@ set(SOURCES
     src/dllmain.cpp
     src/config.cpp
     src/fixes.cpp
-    src/gui.cpp
     src/hooks.cpp
-    src/launcher.cpp
     src/logger.cpp
     external/safetyhook/safetyhook.cpp
     external/safetyhook/Zydis.c
 )
 
-add_library(claudia SHARED ${SOURCES})
+add_library(animus_injector SHARED ${SOURCES})
 
-set_target_properties(claudia PROPERTIES
+set_target_properties(animus_injector PROPERTIES
     PREFIX ""
     SUFFIX ".asi"
-    OUTPUT_NAME "claudia"
+    OUTPUT_NAME "AnimusInjector"
 )
 
-target_include_directories(claudia PRIVATE
+target_include_directories(animus_injector PRIVATE
     src
     external/inipp
     external/spdlog/include
     external/safetyhook
 )
 
-target_compile_definitions(claudia PRIVATE
+target_compile_definitions(animus_injector PRIVATE
     WIN32
     _WINDOWS
     _USRDLL
@@ -42,30 +40,22 @@ target_compile_definitions(claudia PRIVATE
     ZYCORE_STATIC_BUILD
 )
 
-target_link_libraries(claudia PRIVATE
-    user32
+target_link_libraries(animus_injector PRIVATE
     ws2_32
-    comctl32
     psapi
     xinput
 )
 
 if(MSVC)
-    target_compile_options(claudia PRIVATE /utf-8 /EHsc)
-    set_property(TARGET claudia PROPERTY
+    target_compile_options(animus_injector PRIVATE /utf-8 /EHsc)
+    set_property(TARGET animus_injector PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
-    target_link_options(claudia PRIVATE
+    target_link_options(animus_injector PRIVATE
         $<$<CONFIG:Release>:/OPT:REF>
         $<$<CONFIG:Release>:/OPT:ICF>
     )
 endif()
-
-add_custom_command(TARGET claudia POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/claudia.ini
-        $<TARGET_FILE_DIR:claudia>/claudia.ini
-)
 
 set(LOADER_SOURCES
     src/loader/dllmain.cpp

@@ -1,6 +1,6 @@
 #pragma once
 
-namespace claudia::hooks
+namespace animus_injector::hooks
 {
     [[nodiscard]] auto initialize() -> bool;
     auto shutdown() -> void;

@@ -1,10 +1,8 @@
-#include "claudia.h"
+#include "animus_injector.h"
 #include "config.h"
 #include "logger.h"
-#include "gui.h"
 #include "hooks.h"
 #include "fixes.h"
-#include "launcher.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -12,132 +10,151 @@
 #include <filesystem>
 #include <format>
 #include <string>
+#include <string_view>
 
 namespace
 {
-    HMODULE g_module = nullptr;
+    [[nodiscard]] std::wstring get_current_exe_name()
+    {
+        wchar_t module_path[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, module_path, MAX_PATH) == 0)
+            return L"";
+
+        const wchar_t* filename = wcsrchr(module_path, L'\\');
+        filename = filename ? filename + 1 : module_path;
+
+        return std::wstring(filename);
+    }
 
     [[nodiscard]] bool is_target_process()
+    {
+        const auto exe_name = get_current_exe_name();
+        if (exe_name.empty())
+            return false;
+
+        for (const auto& game : animus_injector::SUPPORTED_GAMES)
+        {
+            if (_wcsicmp(exe_name.c_str(), game.data()) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    [[nodiscard]] bool has_credential_arguments()
+    {
+        const std::wstring command_line = GetCommandLineW();
+        return command_line.find(L"/onlineUser:") != std::wstring::npos &&
+               command_line.find(L"/onlinePassword:") != std::wstring::npos;
+    }
+
+    [[nodiscard]] bool relaunch_with_credentials(std::string_view username, std::string_view password)
     {
         wchar_t module_path[MAX_PATH];
         if (GetModuleFileNameW(nullptr, module_path, MAX_PATH) == 0)
             return false;
 
-        // extract filename from path
-        const wchar_t* filename = wcsrchr(module_path, L'\\');
-        filename = filename ? filename + 1 : module_path;
+        const auto base_path = std::filesystem::path(module_path).parent_path();
+        const auto game_path = base_path / get_current_exe_name();
 
-        // only inject into multiplayer executable
-        return _wcsicmp(filename, L"ACBMP.exe") == 0;
+        const std::wstring username_wide(username.begin(), username.end());
+        const std::wstring password_wide(password.begin(), password.end());
+
+        std::wstring command_line = std::format(
+            L"\"{}\" /onlineUser:{} /onlinePassword:{}",
+            game_path.wstring(), username_wide, password_wide);
+
+        animus_injector::logger::debug("relaunching game with command-line credentials");
+
+        STARTUPINFOW si = { .cb = sizeof(si) };
+        PROCESS_INFORMATION pi{};
+
+        if (!CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, 0,
+                            nullptr, base_path.wstring().c_str(), &si, &pi))
+        {
+            animus_injector::logger::error(std::format("failed to relaunch game: {}", GetLastError()));
+            return false;
+        }
+
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return true;
     }
 
     void init()
     {
-        const auto base_path = claudia::get_base_path();
+        const auto base_path = animus_injector::get_base_path();
         const auto config_path = base_path / std::string(CONFIG_FILENAME);
 
-        if (!claudia::config::initialize(config_path))
+        if (!animus_injector::config::initialize(config_path))
         {
-            claudia::gui::show_error("Claudia", "Failed to initialize configuration.");
+            animus_injector::logger::error("failed to initialize configuration");
             return;
         }
 
-        (void)claudia::config::load();
+        (void)animus_injector::config::load();
 
-        const auto& settings = claudia::config::get();
-        const auto log_path = base_path / "claudia.log";
+        const auto& settings = animus_injector::config::get();
+        const auto log_path = base_path / std::string(LOG_FILENAME);
 
-        if (!claudia::logger::initialize(log_path, settings.log.enabled, settings.log.level))
+        if (!animus_injector::logger::initialize(log_path, settings.log.enabled, settings.log.level))
         {
-            claudia::gui::show_error("Claudia", "Failed to initialize logger.");
+            animus_injector::logger::error("failed to initialize logger");
             return;
         }
 
-        claudia::logger::info("starting initialization");
-        claudia::logger::info(std::format("base path: {}", base_path.string()));
+        animus_injector::logger::info("starting initialization");
+        animus_injector::logger::info(std::format("base path: {}", base_path.string()));
 
-        if (!claudia::launcher::game_exists())
+        // first launch: generate the per-game defaults, then exit so the user
+        // can review AnimusInjector.ini before actually starting the game.
+        if (animus_injector::config::was_created())
         {
-            claudia::logger::error("game executable not found");
-            claudia::gui::show_error("Claudia", "Missing multiplayer game files.\n\nACBMP.exe was not found.");
-            ExitProcess(1);
-            return;
-        }
-
-        // if we do have credentials, then initialize hooks and fixes
-        if (claudia::launcher::has_credentials())
-        {
-            claudia::logger::info("credentials found in command line");
-
-            if (!claudia::hooks::initialize())
-            {
-                claudia::logger::error("failed to initialize hooks");
-                claudia::gui::show_error("Claudia", "Failed to initialize network hooks.");
-                return;
-            }
-
-            if (!claudia::fixes::initialize())
-            {
-                claudia::logger::warn("some game fixes could not be applied");
-            }
-
-            claudia::logger::info("initialization complete");
-            return;
-        }
-
-        // no credentials, check if we should skip dialog
-        if (settings.ui.skip_config_dialog && 
-            !settings.creds.username.empty() && 
-            !settings.creds.password.empty())
-        {
-            claudia::logger::info("skipping config dialog - launching with saved credentials");
-        }
-        else
-        {
-            claudia::logger::info("showing config dialog");
-
-            if (!claudia::gui::initialize(g_module))
-            {
-                claudia::logger::error("failed to initialize gui");
-                claudia::gui::show_error("Claudia", "Failed to initialize user interface.");
-                ExitProcess(1);
-                return;
-            }
-
-            const auto result = claudia::gui::show_config_dialog();
-
-            if (result == claudia::gui::result::cancel)
-            {
-                claudia::logger::info("user cancelled");
-                ExitProcess(0);
-                return;
-            }
-
-            if (result == claudia::gui::result::error)
-            {
-                claudia::logger::error("dialog error");
-                ExitProcess(1);
-                return;
-            }
-        }
-
-        // reload config to get any changes
-        (void)claudia::config::load();
-        const auto& updated_settings = claudia::config::get();
-
-        claudia::logger::info("relaunching game with credentials");
-
-        if (claudia::launcher::launch_game(updated_settings.creds.username, 
-                                           updated_settings.creds.password))
-        {
-            claudia::logger::info("game relaunched exiting current instance");
+            animus_injector::logger::info(
+                "first launch: created AnimusInjector.ini with defaults; "
+                "aborting launch - review it and start the game again");
             ExitProcess(0);
+            return;
         }
-        else
+
+        // ACB authenticates over the command line; relaunch with the configured
+        // credentials if this instance was started without them.
+        if (animus_injector::config::get_game() == animus_injector::config::game::acb &&
+            !has_credential_arguments())
         {
-            claudia::gui::show_error("Claudia", "Failed to launch the game.");
-            ExitProcess(1);
+            if (settings.creds.username.empty() || settings.creds.password.empty())
+            {
+                animus_injector::logger::error(
+                    "ACB credentials missing: add [Credentials] Username/Password to "
+                    "AnimusInjector.ini or launch ACBMP.exe with /onlineUser: and /onlinePassword:");
+                ExitProcess(1);
+                return;
+            }
+
+            animus_injector::logger::info("relaunching ACBMP.exe with AnimusInjector.ini credentials");
+            if (relaunch_with_credentials(settings.creds.username, settings.creds.password))
+            {
+                animus_injector::logger::info("game relaunched; exiting current instance");
+                ExitProcess(0);
+            }
+            else
+            {
+                animus_injector::logger::error("failed to relaunch game with credentials");
+            }
         }
+
+        if (!animus_injector::hooks::initialize())
+        {
+            animus_injector::logger::error("failed to initialize hooks");
+            return;
+        }
+
+        if (!animus_injector::fixes::initialize())
+        {
+            animus_injector::logger::warn("some game fixes could not be applied");
+        }
+
+        animus_injector::logger::info("initialization complete");
     }
 }
 
@@ -152,25 +169,29 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, [[maybe_unused]
         if (!is_target_process())
             return TRUE;
 
-        g_module = hModule;
         init();
         break;
 
     case DLL_PROCESS_DETACH:
-        claudia::fixes::shutdown();
-        claudia::hooks::shutdown();
-        claudia::logger::shutdown();
+        animus_injector::fixes::shutdown();
+        animus_injector::hooks::shutdown();
+        animus_injector::logger::shutdown();
         break;
     }
     return TRUE;
 }
 
-namespace claudia
+namespace animus_injector
 {
     std::filesystem::path get_base_path()
     {
         wchar_t path[MAX_PATH];
         GetModuleFileNameW(nullptr, path, MAX_PATH);
         return std::filesystem::path(path).parent_path();
+    }
+
+    std::wstring get_game_executable()
+    {
+        return get_current_exe_name();
     }
 }
