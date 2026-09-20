@@ -177,11 +177,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, [[maybe_unused]
         if (!is_target_process())
             return TRUE;
 
-        init();
-        // ACR's XInput fix calls XInputEnable(), which pulls in the xinput
-        // DLL. Doing that inside DllMain while the loader lock is held
-        // deadlocks the process on Wine/Linux, so ACR initializes on a
-        // dedicated thread (mirrors the ACRMP-ControllerFix loader).
+        // Wine's XInputEnable() starts a worker thread and waits for it.
+        // Run ACR initialization only on a dedicated thread, after DllMain
+        // releases the loader lock, so that XInput's worker can start.
         if (_wcsicmp(get_current_exe_name().c_str(), animus_injector::GAME_ACR.data()) == 0)
         {
             if (HANDLE thread = CreateThread(nullptr, 0, initialize_thread, nullptr, 0, nullptr))

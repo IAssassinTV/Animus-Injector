@@ -18,7 +18,7 @@ docker run --rm \
     -w /src \
     "$IMAGE" \
     sh -c "
-        wmake -B build/$CONFIG -A Win32
+        wmake -B build/$CONFIG -A Win32 -DCMAKE_BUILD_TYPE=$CONFIG
         cmake --build build/$CONFIG -j\$(nproc)
     "
 
