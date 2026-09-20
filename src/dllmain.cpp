@@ -14,6 +14,14 @@
 
 namespace
 {
+    void init();
+
+    DWORD WINAPI initialize_thread([[maybe_unused]] LPVOID lpParam)
+    {
+        init();
+        return 0;
+    }
+
     [[nodiscard]] std::wstring get_current_exe_name()
     {
         wchar_t module_path[MAX_PATH];
@@ -170,6 +178,19 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, [[maybe_unused]
             return TRUE;
 
         init();
+        // ACR's XInput fix calls XInputEnable(), which pulls in the xinput
+        // DLL. Doing that inside DllMain while the loader lock is held
+        // deadlocks the process on Wine/Linux, so ACR initializes on a
+        // dedicated thread (mirrors the ACRMP-ControllerFix loader).
+        if (_wcsicmp(get_current_exe_name().c_str(), animus_injector::GAME_ACR.data()) == 0)
+        {
+            if (HANDLE thread = CreateThread(nullptr, 0, initialize_thread, nullptr, 0, nullptr))
+                CloseHandle(thread);
+        }
+        else
+        {
+            init();
+        }
         break;
 
     case DLL_PROCESS_DETACH:
