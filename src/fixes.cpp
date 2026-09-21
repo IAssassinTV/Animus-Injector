@@ -11,7 +11,9 @@
 #include <dinput.h>
 
 #include <array>
+#include <atomic>
 #include <span>
+#include <string>
 #include <string_view>
 #include <optional>
 #include <format>
@@ -819,7 +821,7 @@ namespace animus_injector::fixes
         {
             // AC3MP.exe build reference (2013-04-30, PE timestamp 0x517F6F88)
             constexpr std::uint32_t AC3MP_PE_TIMESTAMP = 0x517F6F88u;
-            constexpr std::uint32_t AC3MP_IMAGE_SIZE = 0x015CF000u;
+            constexpr std::uint32_t AC3MP_IMAGE_SIZE = 0x015E1000u;
             constexpr std::uintptr_t STARTUP_VIDEO_CALL_RVA = 0x007CDAAEu;
             constexpr std::uintptr_t FINISH_VIDEO_SEQUENCE_RVA = 0x007C6A96u;
             constexpr std::uintptr_t ADVANCE_STARTUP_STATE_RVA = 0x007D46A0u;
@@ -917,6 +919,185 @@ namespace animus_injector::fixes
             return true;
         }
 
+        // uplay proxy friend-service host fix (AC3MP)
+        //
+        // uplay_r1_loader.dll is the multiplayer proxy that serves the AC3 friend
+        // list from the official online config service. Rewrite the base URL the proxy builds every
+        // request from. Only the mapped image is touched, never the file itself.
+
+        namespace uplay_proxy
+        {
+            inline constexpr std::string_view MODULE_NAME = "uplay_r1_loader.dll";
+            inline constexpr std::wstring_view MODULE_NAME_WIDE = L"uplay_r1_loader.dll";
+            inline constexpr std::string_view URL_SCHEME = "http://";
+
+            // base URL literal used by the proxy (friend-proxy-20260614, .rdata)
+            inline constexpr std::string_view ORIGINAL_URL = "http://onlineconfigservice.ubi.com";
+
+            // the proxy is imported by AC3MP.exe but can be mapped after the
+            // injector, so also wait for it on a worker thread
+            inline constexpr int WAIT_ATTEMPTS = 120;
+            inline constexpr DWORD WAIT_INTERVAL_MS = 250;
+
+            std::atomic_bool s_patch_started{false};
+            std::atomic_bool s_shutting_down{false};
+            std::string s_replacement_url;
+        }
+
+        enum class proxy_patch_result
+        {
+            applied,
+            module_not_loaded,
+            url_not_found
+        };
+
+        [[nodiscard]] std::uint8_t* find_proxy_url(HMODULE module)
+        {
+            auto* base = reinterpret_cast<std::uint8_t*>(module);
+            auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+                return nullptr;
+
+            auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE)
+                return nullptr;
+
+            const std::size_t length = uplay_proxy::ORIGINAL_URL.size();
+
+            auto* section = IMAGE_FIRST_SECTION(nt);
+            for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
+            {
+                if ((section->Characteristics & IMAGE_SCN_MEM_READ) == 0)
+                    continue;
+
+                auto* begin = base + section->VirtualAddress;
+                const std::size_t size = section->Misc.VirtualSize;
+                if (size < length)
+                    continue;
+
+                for (std::size_t offset = 0; offset <= size - length; ++offset)
+                {
+                    if (std::memcmp(begin + offset, uplay_proxy::ORIGINAL_URL.data(), length) == 0)
+                        return begin + offset;
+                }
+            }
+
+            return nullptr;
+        }
+
+        [[nodiscard]] proxy_patch_result patch_proxy_url(std::string_view replacement_url)
+        {
+            const auto module = GetModuleHandleW(uplay_proxy::MODULE_NAME_WIDE.data());
+            if (!module)
+                return proxy_patch_result::module_not_loaded;
+
+            auto* url = find_proxy_url(module);
+            if (!url)
+                return proxy_patch_result::url_not_found;
+
+            const std::size_t length = uplay_proxy::ORIGINAL_URL.size() + 1;
+
+            DWORD old_protect;
+            if (!VirtualProtect(url, length, PAGE_EXECUTE_READWRITE, &old_protect))
+            {
+                logger::error(std::format("uplay proxy host fix: failed to unprotect the proxy URL at 0x{:X}",
+                    reinterpret_cast<std::uintptr_t>(url)));
+                return proxy_patch_result::url_not_found;
+            }
+
+            std::memcpy(url, replacement_url.data(), replacement_url.size());
+            url[replacement_url.size()] = 0;
+
+            VirtualProtect(url, length, old_protect, &old_protect);
+
+            logger::info(std::format("uplay proxy host fix: {} -> {} at 0x{:X}",
+                uplay_proxy::ORIGINAL_URL, replacement_url, reinterpret_cast<std::uintptr_t>(url)));
+
+            return proxy_patch_result::applied;
+        }
+
+        DWORD WINAPI uplay_proxy_patch_thread([[maybe_unused]] LPVOID lpParam)
+        {
+            for (int attempt = 0; attempt < uplay_proxy::WAIT_ATTEMPTS; ++attempt)
+            {
+                Sleep(uplay_proxy::WAIT_INTERVAL_MS);
+
+                if (uplay_proxy::s_shutting_down)
+                    return 0;
+
+                switch (patch_proxy_url(uplay_proxy::s_replacement_url))
+                {
+                case proxy_patch_result::applied:
+                    return 0;
+                case proxy_patch_result::url_not_found:
+                    logger::warn(std::format("uplay proxy host fix: URL not found in {}",
+                        uplay_proxy::MODULE_NAME));
+                    return 0;
+                case proxy_patch_result::module_not_loaded:
+                    break;
+                }
+            }
+
+            logger::warn(std::format("uplay proxy host fix: {} was not loaded in time",
+                uplay_proxy::MODULE_NAME));
+            return 0;
+        }
+
+        [[nodiscard]] bool apply_uplay_proxy_host_fix()
+        {
+            const auto& redirect_host = config::get().net.redirect_host;
+
+            if (redirect_host.empty())
+            {
+                logger::warn("uplay proxy host fix: no redirect host configured");
+                return false;
+            }
+
+            if (_stricmp(redirect_host.c_str(), ORIGINAL_HOST.data()) == 0)
+            {
+                logger::info("uplay proxy host fix: redirect host is the official host, nothing to do");
+                return true;
+            }
+
+            const std::string replacement = std::format("{}{}", uplay_proxy::URL_SCHEME, redirect_host);
+
+            if (replacement.size() > uplay_proxy::ORIGINAL_URL.size())
+            {
+                logger::warn(std::format(
+                    "uplay proxy host fix: '{}' is too long for the proxy URL ({} > {} bytes), "
+                    "the proxy keeps using the hostname redirect",
+                    replacement, replacement.size(), uplay_proxy::ORIGINAL_URL.size()));
+                return false;
+            }
+
+            uplay_proxy::s_replacement_url = replacement;
+
+            switch (patch_proxy_url(uplay_proxy::s_replacement_url))
+            {
+            case proxy_patch_result::applied:
+                return true;
+            case proxy_patch_result::url_not_found:
+                logger::warn(std::format("uplay proxy host fix: URL not found in {}",
+                    uplay_proxy::MODULE_NAME));
+                return false;
+            case proxy_patch_result::module_not_loaded:
+                break;
+            }
+
+            logger::info(std::format("uplay proxy host fix: waiting for {} to be loaded",
+                uplay_proxy::MODULE_NAME));
+
+            if (!uplay_proxy::s_patch_started.exchange(true))
+            {
+                if (HANDLE thread = CreateThread(nullptr, 0, uplay_proxy_patch_thread, nullptr, 0, nullptr))
+                    CloseHandle(thread);
+                else
+                    logger::warn("uplay proxy host fix: failed to start the wait thread");
+            }
+
+            return true;
+        }
+
         [[nodiscard]] bool is_skip_intro_videos_fix_supported()
         {
             // startup video patch offsets are only known for AC3MP
@@ -934,6 +1115,13 @@ namespace animus_injector::fixes
         {
             // PunkBuster patch offsets are only known for ACBMP
             return config::get_game() == config::game::acb;
+        }
+
+        [[nodiscard]] bool is_uplay_proxy_host_fix_supported()
+        {
+            // only the AC3MP uplay proxy serves the friend list through the
+            // official online config service host
+            return config::get_game() == config::game::ac3;
         }
     }
 
@@ -1006,12 +1194,19 @@ namespace animus_injector::fixes
             logger::info("skip intro videos fix disabled");
         }
 
+        if (is_uplay_proxy_host_fix_supported())
+        {
+            logger::info("applying uplay proxy host fix");
+            (void)apply_uplay_proxy_host_fix();
+        }
+
         s_active = true;
         return true;
     }
 
     auto shutdown() -> void
     {
+        uplay_proxy::s_shutting_down = true;
         remove_jmp_hook();
         acr_remove_callback_hook();
         s_active = false;
