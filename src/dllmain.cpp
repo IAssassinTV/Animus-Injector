@@ -151,10 +151,11 @@ namespace
             }
         }
 
+        // keep going without the redirect: the game fixes do not depend on it
         if (!animus_injector::hooks::initialize())
         {
-            animus_injector::logger::error("failed to initialize hooks");
-            return;
+            animus_injector::logger::error(
+                "failed to initialize hooks; online services will not reach the redirect host");
         }
 
         if (!animus_injector::fixes::initialize())

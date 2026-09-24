@@ -5,6 +5,8 @@ An ASI injector for the multiplayer mode of Assassin's Creed Brotherhood, Revela
 ## Features
 
 - Redirects from Ubisoft servers to AnimusNetwork's servers
+    - also works when security software has already hooked the network functions
+    - redirects the AC3 friend list served by `uplay_r1_loader.dll`
 - Fixes modern controllers by enforcing XInput
 - Fixes CPU affinity
 - Enforces PunkBuster to be disabled
@@ -93,6 +95,38 @@ Level=info
 FixCpuAffinity=true
 FixSkipIntroVideos=true
 ```
+
+## Troubleshooting
+
+Check `AnimusInjector.log` in the game folder first.
+
+**`already hooked by ...` or `falling back to import table patching`.**
+Another program, usually security software such as Bitdefender, has already
+hooked the Windows networking functions. The injector works around this
+automatically. Continue if the log ends with `hostname redirect active`.
+
+**`failed to install hostname redirect`.**
+The game will still start, but it will not connect to the redirect host. Add
+the game folder as an exception in your antivirus, or temporarily disable its
+behaviour or exploit protection (e.g. Bitdefender *Advanced Threat Defense*).
+Then start the game again. If it still fails, include the log when you report
+the issue.
+
+**`skip intro videos fix: ... not found` or `... is ambiguous` (AC3 only).**
+The fix looks for the intro video code in any `AC3MP.exe` build. This message
+means your build does not contain it in a recognisable form, so the intro
+videos play as usual. The game is not affected otherwise.
+
+**`the AC3 friend list will not be redirected` (AC3 only).**
+The friend list is served by `uplay_r1_loader.dll` over WinINet, which the
+hostname redirect does not cover, so the injector changes the proxy's URL
+directly. This error means that step failed, for example because the proxy was
+replaced with a build it does not recognise. Make sure the AnimusNetwork
+`uplay_r1_loader.dll` is in place.
+
+## Changelog
+
+See [Changelog.md](Changelog.md).
 
 ## Building from source
 

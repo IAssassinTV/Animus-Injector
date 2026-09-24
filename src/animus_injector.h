@@ -6,7 +6,7 @@
 #include <filesystem>
 
 // version info
-inline constexpr std::string_view ANIMUS_INJECTOR_VERSION = "1.0.3";
+inline constexpr std::string_view ANIMUS_INJECTOR_VERSION = "1.0.4";
 inline constexpr std::string_view ANIMUS_INJECTOR_NAME = "Animus Injector";
 
 // network defaults

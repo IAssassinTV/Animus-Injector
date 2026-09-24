@@ -816,30 +816,48 @@ namespace animus_injector::fixes
         }
 
         // skip intro videos fix (AC3MP)
+        //
+        // located by signature rather than fixed addresses, so it applies to any
+        // AC3MP.exe build that still contains the same startup video code.
 
         namespace ac3_intro
         {
-            // AC3MP.exe build reference (2013-04-30, PE timestamp 0x517F6F88)
-            constexpr std::uint32_t AC3MP_PE_TIMESTAMP = 0x517F6F88u;
-            constexpr std::uint32_t AC3MP_IMAGE_SIZE = 0x015E1000u;
-            constexpr std::uintptr_t STARTUP_VIDEO_CALL_RVA = 0x007CDAAEu;
-            constexpr std::uintptr_t FINISH_VIDEO_SEQUENCE_RVA = 0x007C6A96u;
-            constexpr std::uintptr_t ADVANCE_STARTUP_STATE_RVA = 0x007D46A0u;
+            // tail of StartupVideoManager::Start: loop over the startup entries,
+            // then `mov ecx, esi; call StartNextVideo`
+            constexpr signature startup_video_call{
+                "\x0F\xB7\x46\x36\xFF\x45\xFC\x25\xFF\x3F\x00\x00\x83\xC3\x2C\x39\x45\xFC\x72\x00\x8B\xCE\xE8\x00\x00\x00\x00\x5E\x5B\xC9\xC3",
+                "xxxxxxxxxxxxxxxxxxx?xxx????xxxx"
+            };
+            constexpr std::size_t STARTUP_VIDEO_CALL_OFFSET = 22;
 
-            // StartupVideoManager::Start begins with `call StartNextVideo`
-            constexpr std::array<std::uint8_t, 5> STARTUP_VIDEO_CALL_BYTES{
-                0xE8, 0x9A, 0xF2, 0xFF, 0xFF
+            // StartNextVideo reads the entry count (+0x36) and the current
+            // index (+0x1C) that finish_startup_videos writes
+            constexpr signature start_next_video_body{
+                "\x0F\xB7\x4E\x36\x8B\x46\x1C",
+                "xxxxxxx"
+            };
+            constexpr std::size_t START_NEXT_VIDEO_BODY_OFFSET = 8;
+
+            constexpr signature finish_video_sequence{
+                "\x56\x8B\xF1\x8B\x46\x38\x85\xC0\x74\x02\xFF\xD0\xC6\x46\x21\x01\xE8\x00\x00\x00\x00\x5E\x85\xC0\x74\x07\x8B\xC8\xE9",
+                "xxxxxxxxxxxxxxxxx????xxxxxxxx"
+            };
+
+            constexpr signature advance_startup_state{
+                "\x80\x79\x21\x00\x75\x00\x83\x79\x24\x00\x75\x00\x8B\x49\x28\x8B\x41\x18\x83\xF8\x02\x74\x00\x83\xF8\x03\x75\x00\x6A\x01\xE8",
+                "xxxxx?xxxxx?xxxxxxxxxx?xxxx?xxx"
             };
 
             using game_method_t = void(__thiscall*)(void*);
 
-            std::uint8_t* s_game_image = nullptr;
+            game_method_t s_finish_sequence = nullptr;
+            game_method_t s_advance_state = nullptr;
 
             // called in place of StartNextVideo; finishes the startup video
             // sequence immediately so the disclaimer/ubi logo never play.
             void __fastcall finish_startup_videos(void* manager, void* /*unused*/)
             {
-                if (!manager || !s_game_image)
+                if (!manager || !s_finish_sequence || !s_advance_state)
                     return;
 
                 // mark every startup entry as consumed so no stale video is
@@ -848,22 +866,43 @@ namespace animus_injector::fixes
                 const auto video_count = *reinterpret_cast<const WORD*>(bytes + 0x36) & 0x3FFF;
                 *reinterpret_cast<DWORD*>(bytes + 0x1C) = video_count;
 
-                const auto finish_sequence = reinterpret_cast<game_method_t>(
-                    s_game_image + FINISH_VIDEO_SEQUENCE_RVA);
-                const auto advance_state = reinterpret_cast<game_method_t>(
-                    s_game_image + ADVANCE_STARTUP_STATE_RVA);
-
-                finish_sequence(manager);
-                advance_state(manager);
+                s_finish_sequence(manager);
+                s_advance_state(manager);
 
                 logger::info("skip intro videos fix: startup sequence completed");
+            }
+
+            // a signature that matches more than once cannot be trusted on an
+            // unknown build, so require exactly one match in the image
+            [[nodiscard]] std::uint8_t* find_unique(HMODULE module, const signature& sig, std::string_view name)
+            {
+                MODULEINFO mod_info{};
+                if (!GetModuleInformation(GetCurrentProcess(), module, &mod_info, sizeof(mod_info)))
+                    return nullptr;
+
+                const std::span<const std::uint8_t> memory{
+                    static_cast<const std::uint8_t*>(mod_info.lpBaseOfDll), mod_info.SizeOfImage};
+
+                const auto first = scan_signature(memory, sig);
+                if (!first)
+                {
+                    logger::warn(std::format("skip intro videos fix: {} not found", name));
+                    return nullptr;
+                }
+
+                const auto offset = *first - reinterpret_cast<std::uintptr_t>(memory.data()) + 1;
+                if (scan_signature(memory.subspan(offset), sig))
+                {
+                    logger::warn(std::format("skip intro videos fix: {} is ambiguous", name));
+                    return nullptr;
+                }
+
+                return reinterpret_cast<std::uint8_t*>(*first);
             }
         }
 
         bool apply_skip_intro_videos_fix_ac3mp()
         {
-            logger::info("applying skip intro videos fix");
-
             auto* executable = GetModuleHandleW(nullptr);
             if (!executable)
             {
@@ -871,33 +910,29 @@ namespace animus_injector::fixes
                 return false;
             }
 
-            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(executable);
-            if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+            auto* site = ac3_intro::find_unique(executable, ac3_intro::startup_video_call, "startup video call");
+            auto* finish = ac3_intro::find_unique(executable, ac3_intro::finish_video_sequence, "FinishVideoSequence");
+            auto* advance = ac3_intro::find_unique(executable, ac3_intro::advance_startup_state, "AdvanceStartupState");
+            if (!site || !finish || !advance)
+                return false;
+
+            auto* call = site + ac3_intro::STARTUP_VIDEO_CALL_OFFSET;
+
+            // make sure the call still goes to StartNextVideo before replacing it
+            std::int32_t original_relative;
+            std::memcpy(&original_relative, call + 1, sizeof(original_relative));
+            const auto* start_next_video = call + 5 + original_relative;
+
+            const auto& body = ac3_intro::start_next_video_body;
+            if (std::memcmp(start_next_video + ac3_intro::START_NEXT_VIDEO_BODY_OFFSET,
+                            body.pattern.data(), body.length()) != 0)
             {
-                logger::error("skip intro videos fix: executable not recognized (invalid DOS header)");
+                logger::warn("skip intro videos fix: startup video call does not target StartNextVideo");
                 return false;
             }
 
-            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
-                reinterpret_cast<const std::uint8_t*>(executable) + dos->e_lfanew);
-            if (nt->Signature != IMAGE_NT_SIGNATURE ||
-                nt->FileHeader.TimeDateStamp != ac3_intro::AC3MP_PE_TIMESTAMP ||
-                nt->OptionalHeader.SizeOfImage != ac3_intro::AC3MP_IMAGE_SIZE)
-            {
-                logger::warn("skip intro videos fix: unsupported AC3MP.exe build");
-                return false;
-            }
-
-            auto* call = reinterpret_cast<std::uint8_t*>(executable)
-                + ac3_intro::STARTUP_VIDEO_CALL_RVA;
-            if (std::memcmp(call, ac3_intro::STARTUP_VIDEO_CALL_BYTES.data(),
-                            ac3_intro::STARTUP_VIDEO_CALL_BYTES.size()) != 0)
-            {
-                logger::warn("skip intro videos fix: startup video call signature mismatch");
-                return false;
-            }
-
-            ac3_intro::s_game_image = reinterpret_cast<std::uint8_t*>(executable);
+            ac3_intro::s_finish_sequence = reinterpret_cast<ac3_intro::game_method_t>(finish);
+            ac3_intro::s_advance_state = reinterpret_cast<ac3_intro::game_method_t>(advance);
 
             std::array<std::uint8_t, 5> replacement{ 0xE8, 0, 0, 0, 0 };
             const auto relative = static_cast<std::int32_t>(
@@ -915,15 +950,23 @@ namespace animus_injector::fixes
             FlushInstructionCache(GetCurrentProcess(), call, replacement.size());
             VirtualProtect(call, replacement.size(), old_protect, &old_protect);
 
-            logger::info("skip intro videos fix installed");
+            const auto base = reinterpret_cast<std::uintptr_t>(executable);
+            logger::info(std::format("skip intro videos fix installed (call 0x{:X}, finish 0x{:X}, advance 0x{:X})",
+                reinterpret_cast<std::uintptr_t>(call) - base,
+                reinterpret_cast<std::uintptr_t>(finish) - base,
+                reinterpret_cast<std::uintptr_t>(advance) - base));
             return true;
         }
 
         // uplay proxy friend-service host fix (AC3MP)
         //
         // uplay_r1_loader.dll is the multiplayer proxy that serves the AC3 friend
-        // list from the official online config service. Rewrite the base URL the proxy builds every
-        // request from. Only the mapped image is touched, never the file itself.
+        // list from the official online config service. It talks HTTP through
+        // WinINet, which the hostname redirect does not cover, so the proxy's
+        // base URLs are replaced here. Every reference to a URL literal is an
+        // absolute address with a base relocation; those references are pointed
+        // at a copy of the new URL owned by the injector, so the host can be any
+        // length. Only the mapped image is touched, never the file itself.
 
         namespace uplay_proxy
         {
@@ -934,6 +977,10 @@ namespace animus_injector::fixes
             // base URL literal used by the proxy (friend-proxy-20260614, .rdata)
             inline constexpr std::string_view ORIGINAL_URL = "http://onlineconfigservice.ubi.com";
 
+            // the proxy retries a private address when the primary URL fails,
+            // which is unreachable for players; retry the redirect host instead
+            inline constexpr std::string_view RETRY_URL = "http://10.163.216.209";
+
             // the proxy is imported by AC3MP.exe but can be mapped after the
             // injector, so also wait for it on a worker thread
             inline constexpr int WAIT_ATTEMPTS = 120;
@@ -942,16 +989,20 @@ namespace animus_injector::fixes
             std::atomic_bool s_patch_started{false};
             std::atomic_bool s_shutting_down{false};
             std::string s_replacement_url;
+
+            // never freed: the proxy may still read it after the injector unloads
+            const char* s_url_copy{nullptr};
         }
 
         enum class proxy_patch_result
         {
             applied,
             module_not_loaded,
-            url_not_found
+            url_not_found,
+            patch_failed
         };
 
-        [[nodiscard]] std::uint8_t* find_proxy_url(HMODULE module)
+        [[nodiscard]] IMAGE_NT_HEADERS* get_nt_headers(HMODULE module)
         {
             auto* base = reinterpret_cast<std::uint8_t*>(module);
             auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -962,7 +1013,18 @@ namespace animus_injector::fixes
             if (nt->Signature != IMAGE_NT_SIGNATURE)
                 return nullptr;
 
-            const std::size_t length = uplay_proxy::ORIGINAL_URL.size();
+            return nt;
+        }
+
+        // finds a NUL-terminated string literal in the readable sections
+        [[nodiscard]] std::uint8_t* find_proxy_string(HMODULE module, std::string_view text)
+        {
+            auto* nt = get_nt_headers(module);
+            if (!nt)
+                return nullptr;
+
+            auto* base = reinterpret_cast<std::uint8_t*>(module);
+            const std::size_t length = text.size() + 1;
 
             auto* section = IMAGE_FIRST_SECTION(nt);
             for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
@@ -977,12 +1039,92 @@ namespace animus_injector::fixes
 
                 for (std::size_t offset = 0; offset <= size - length; ++offset)
                 {
-                    if (std::memcmp(begin + offset, uplay_proxy::ORIGINAL_URL.data(), length) == 0)
+                    if (std::memcmp(begin + offset, text.data(), text.size()) == 0 && begin[offset + text.size()] == 0)
                         return begin + offset;
                 }
             }
 
             return nullptr;
+        }
+
+        // rewrites every relocated absolute reference to `target` so it points
+        // at `replacement`; returns the number of references changed
+        [[nodiscard]] std::size_t repoint_references(HMODULE module, const void* target, const void* replacement)
+        {
+            auto* nt = get_nt_headers(module);
+            if (!nt)
+                return 0;
+
+            const auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+            if (directory.VirtualAddress == 0 || directory.Size == 0)
+                return 0;
+
+            auto* base = reinterpret_cast<std::uint8_t*>(module);
+            const auto old_value = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(target));
+            const auto new_value = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(replacement));
+
+            std::size_t patched = 0;
+            auto* block = base + directory.VirtualAddress;
+            auto* const end = block + directory.Size;
+
+            while (block + sizeof(IMAGE_BASE_RELOCATION) <= end)
+            {
+                const auto* header = reinterpret_cast<const IMAGE_BASE_RELOCATION*>(block);
+                if (header->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION))
+                    break;
+
+                const auto* entries = reinterpret_cast<const WORD*>(block + sizeof(IMAGE_BASE_RELOCATION));
+                const std::size_t count = (header->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    if ((entries[i] >> 12) != IMAGE_REL_BASED_HIGHLOW)
+                        continue;
+
+                    auto* slot = base + header->VirtualAddress + (entries[i] & 0x0FFF);
+
+                    std::uint32_t value;
+                    std::memcpy(&value, slot, sizeof(value));
+                    if (value != old_value)
+                        continue;
+
+                    DWORD old_protect;
+                    if (!VirtualProtect(slot, sizeof(value), PAGE_EXECUTE_READWRITE, &old_protect))
+                    {
+                        logger::error(std::format("uplay proxy host fix: failed to unprotect reference at 0x{:X}",
+                            reinterpret_cast<std::uintptr_t>(slot)));
+                        continue;
+                    }
+
+                    std::memcpy(slot, &new_value, sizeof(new_value));
+                    VirtualProtect(slot, sizeof(value), old_protect, &old_protect);
+                    FlushInstructionCache(GetCurrentProcess(), slot, sizeof(value));
+                    ++patched;
+                }
+
+                block += header->SizeOfBlock;
+            }
+
+            return patched;
+        }
+
+        [[nodiscard]] const char* get_url_copy(std::string_view url)
+        {
+            if (uplay_proxy::s_url_copy)
+                return uplay_proxy::s_url_copy;
+
+            auto* copy = static_cast<char*>(VirtualAlloc(nullptr, url.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+            if (!copy)
+                return nullptr;
+
+            std::memcpy(copy, url.data(), url.size());
+            copy[url.size()] = 0;
+
+            DWORD old_protect;
+            VirtualProtect(copy, url.size() + 1, PAGE_READONLY, &old_protect);
+
+            uplay_proxy::s_url_copy = copy;
+            return copy;
         }
 
         [[nodiscard]] proxy_patch_result patch_proxy_url(std::string_view replacement_url)
@@ -991,29 +1133,42 @@ namespace animus_injector::fixes
             if (!module)
                 return proxy_patch_result::module_not_loaded;
 
-            auto* url = find_proxy_url(module);
+            auto* url = find_proxy_string(module, uplay_proxy::ORIGINAL_URL);
             if (!url)
                 return proxy_patch_result::url_not_found;
 
-            const std::size_t length = uplay_proxy::ORIGINAL_URL.size() + 1;
-
-            DWORD old_protect;
-            if (!VirtualProtect(url, length, PAGE_EXECUTE_READWRITE, &old_protect))
+            const char* copy = get_url_copy(replacement_url);
+            if (!copy)
             {
-                logger::error(std::format("uplay proxy host fix: failed to unprotect the proxy URL at 0x{:X}",
-                    reinterpret_cast<std::uintptr_t>(url)));
-                return proxy_patch_result::url_not_found;
+                logger::error(std::format("uplay proxy host fix: failed to allocate the replacement URL (error {})",
+                    GetLastError()));
+                return proxy_patch_result::patch_failed;
             }
 
-            std::memcpy(url, replacement_url.data(), replacement_url.size());
-            url[replacement_url.size()] = 0;
+            const auto references = repoint_references(module, url, copy);
+            if (references == 0)
+            {
+                logger::error(std::format("uplay proxy host fix: no references to {} found in {}",
+                    uplay_proxy::ORIGINAL_URL, uplay_proxy::MODULE_NAME));
+                return proxy_patch_result::patch_failed;
+            }
 
-            VirtualProtect(url, length, old_protect, &old_protect);
+            logger::info(std::format("uplay proxy host fix: {} -> {} ({} references)",
+                uplay_proxy::ORIGINAL_URL, replacement_url, references));
 
-            logger::info(std::format("uplay proxy host fix: {} -> {} at 0x{:X}",
-                uplay_proxy::ORIGINAL_URL, replacement_url, reinterpret_cast<std::uintptr_t>(url)));
+            if (auto* retry_url = find_proxy_string(module, uplay_proxy::RETRY_URL))
+            {
+                const auto retry_references = repoint_references(module, retry_url, copy);
+                logger::info(std::format("uplay proxy host fix: retry {} -> {} ({} references)",
+                    uplay_proxy::RETRY_URL, replacement_url, retry_references));
+            }
 
             return proxy_patch_result::applied;
+        }
+
+        auto log_proxy_not_redirected(std::string_view reason) -> void
+        {
+            logger::error(std::format("uplay proxy host fix: {}; the AC3 friend list will not be redirected", reason));
         }
 
         DWORD WINAPI uplay_proxy_patch_thread([[maybe_unused]] LPVOID lpParam)
@@ -1030,16 +1185,17 @@ namespace animus_injector::fixes
                 case proxy_patch_result::applied:
                     return 0;
                 case proxy_patch_result::url_not_found:
-                    logger::warn(std::format("uplay proxy host fix: URL not found in {}",
-                        uplay_proxy::MODULE_NAME));
+                    log_proxy_not_redirected(std::format("URL not found in {}", uplay_proxy::MODULE_NAME));
+                    return 0;
+                case proxy_patch_result::patch_failed:
+                    log_proxy_not_redirected("patching failed");
                     return 0;
                 case proxy_patch_result::module_not_loaded:
                     break;
                 }
             }
 
-            logger::warn(std::format("uplay proxy host fix: {} was not loaded in time",
-                uplay_proxy::MODULE_NAME));
+            log_proxy_not_redirected(std::format("{} was not loaded in time", uplay_proxy::MODULE_NAME));
             return 0;
         }
 
@@ -1049,7 +1205,7 @@ namespace animus_injector::fixes
 
             if (redirect_host.empty())
             {
-                logger::warn("uplay proxy host fix: no redirect host configured");
+                log_proxy_not_redirected("no redirect host configured");
                 return false;
             }
 
@@ -1059,26 +1215,17 @@ namespace animus_injector::fixes
                 return true;
             }
 
-            const std::string replacement = std::format("{}{}", uplay_proxy::URL_SCHEME, redirect_host);
-
-            if (replacement.size() > uplay_proxy::ORIGINAL_URL.size())
-            {
-                logger::warn(std::format(
-                    "uplay proxy host fix: '{}' is too long for the proxy URL ({} > {} bytes), "
-                    "the proxy keeps using the hostname redirect",
-                    replacement, replacement.size(), uplay_proxy::ORIGINAL_URL.size()));
-                return false;
-            }
-
-            uplay_proxy::s_replacement_url = replacement;
+            uplay_proxy::s_replacement_url = std::format("{}{}", uplay_proxy::URL_SCHEME, redirect_host);
 
             switch (patch_proxy_url(uplay_proxy::s_replacement_url))
             {
             case proxy_patch_result::applied:
                 return true;
             case proxy_patch_result::url_not_found:
-                logger::warn(std::format("uplay proxy host fix: URL not found in {}",
-                    uplay_proxy::MODULE_NAME));
+                log_proxy_not_redirected(std::format("URL not found in {}", uplay_proxy::MODULE_NAME));
+                return false;
+            case proxy_patch_result::patch_failed:
+                log_proxy_not_redirected("patching failed");
                 return false;
             case proxy_patch_result::module_not_loaded:
                 break;
@@ -1092,7 +1239,7 @@ namespace animus_injector::fixes
                 if (HANDLE thread = CreateThread(nullptr, 0, uplay_proxy_patch_thread, nullptr, 0, nullptr))
                     CloseHandle(thread);
                 else
-                    logger::warn("uplay proxy host fix: failed to start the wait thread");
+                    log_proxy_not_redirected("failed to start the wait thread");
             }
 
             return true;
@@ -1140,58 +1287,48 @@ namespace animus_injector::fixes
             logger::info("cpu affinity fix disabled");
         }
 
-        if (settings.fix.fix_xinput_detection)
+        // game-specific fixes stay silent in games they do not apply to
+
+        if (is_xinput_fix_supported())
         {
-            if (!is_xinput_fix_supported())
-            {
-                logger::info("xinput detection fix not available for this game");
-            }
-            else
+            if (settings.fix.fix_xinput_detection)
             {
                 logger::info("applying xinput detection fix");
                 if (!apply_xinput_detection_fix())
                     logger::warn("xinput detection fix could not be applied");
             }
-        }
-        else
-        {
-            logger::info("xinput detection fix disabled");
+            else
+            {
+                logger::info("xinput detection fix disabled");
+            }
         }
 
-        if (settings.fix.fix_disable_punkbuster)
+        if (is_punkbuster_fix_supported())
         {
-            if (!is_punkbuster_fix_supported())
-            {
-                logger::info("punkbuster fix not available for this game");
-            }
-            else
+            if (settings.fix.fix_disable_punkbuster)
             {
                 logger::info("applying punkbuster fix");
                 if (!apply_punkbuster_fix())
                     logger::warn("punkbuster fix could not be applied");
             }
-        }
-        else
-        {
-            logger::info("punkbuster fix disabled");
+            else
+            {
+                logger::info("punkbuster fix disabled");
+            }
         }
 
-        if (settings.fix.fix_skip_intro_videos)
+        if (is_skip_intro_videos_fix_supported())
         {
-            if (!is_skip_intro_videos_fix_supported())
-            {
-                logger::info("skip intro videos fix not available for this game");
-            }
-            else
+            if (settings.fix.fix_skip_intro_videos)
             {
                 logger::info("applying skip intro videos fix");
                 if (!apply_skip_intro_videos_fix_ac3mp())
                     logger::warn("skip intro videos fix could not be applied");
             }
-        }
-        else
-        {
-            logger::info("skip intro videos fix disabled");
+            else
+            {
+                logger::info("skip intro videos fix disabled");
+            }
         }
 
         if (is_uplay_proxy_host_fix_supported())
