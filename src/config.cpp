@@ -60,15 +60,22 @@ namespace animus_injector::config
                 break;
             case game::ac3:
                 s.fix.fix_skip_intro_videos = true;
+                s.net.uplay_proxy = std::string(DEFAULT_UPLAY_PROXY);
                 break;
             default:
                 s.fix.fix_xinput_detection = true;
                 s.fix.fix_disable_punkbuster = true;
                 s.fix.fix_skip_intro_videos = true;
+                s.net.uplay_proxy = std::string(DEFAULT_UPLAY_PROXY);
                 break;
             }
 
             return s;
+        }
+
+        [[nodiscard]] bool uplay_proxy_active(game g) noexcept
+        {
+            return g == game::ac3 || g == game::unknown;
         }
 
         [[nodiscard]] bool fix_key_active(game g, std::string_view key) noexcept
@@ -126,6 +133,8 @@ namespace animus_injector::config
 
             // network (redirect is always enabled, only host is configurable)
             inipp::get_value(ini.sections["Network"], "RedirectHost", s_settings.net.redirect_host);
+            if (uplay_proxy_active(s_game))
+                inipp::get_value(ini.sections["Network"], "UplayProxy", s_settings.net.uplay_proxy);
 
             // logging
             if (std::string enabled_str;
@@ -200,6 +209,8 @@ namespace animus_injector::config
 
             file << "[Network]\n";
             file << std::format("RedirectHost={}\n", s_settings.net.redirect_host);
+            if (uplay_proxy_active(s_game))
+                file << std::format("UplayProxy={}\n", s_settings.net.uplay_proxy);
             file << '\n';
 
             file << "[Logging]\n";

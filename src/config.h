@@ -23,6 +23,9 @@ namespace animus_injector::config
     {
         std::string redirect_host;
         // redirect is always enabled - no option to disable
+
+        // AC3 only: host[:port] the Uplay proxy's friend requests go to; empty = redirect_host
+        std::string uplay_proxy;
     };
 
     struct logging_settings

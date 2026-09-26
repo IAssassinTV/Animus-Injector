@@ -6,12 +6,14 @@
 #include <filesystem>
 
 // version info
-inline constexpr std::string_view ANIMUS_INJECTOR_VERSION = "1.0.4";
+inline constexpr std::string_view ANIMUS_INJECTOR_VERSION = "1.0.5";
 inline constexpr std::string_view ANIMUS_INJECTOR_NAME = "Animus Injector";
 
 // network defaults
 inline constexpr std::string_view ORIGINAL_HOST = "onlineconfigservice.ubi.com";
 inline constexpr std::string_view DEFAULT_REDIRECT_HOST = "animusnetwork.com";
+// AC3: the Uplay proxy's friend service on the game server (TCP, same port number as its UDP auth server)
+inline constexpr std::string_view DEFAULT_UPLAY_PROXY = "animusnetwork.com:21006";
 
 // file names
 inline constexpr std::string_view CONFIG_FILENAME = "AnimusInjector.ini";

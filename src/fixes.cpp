@@ -1201,21 +1201,24 @@ namespace animus_injector::fixes
 
         [[nodiscard]] bool apply_uplay_proxy_host_fix()
         {
-            const auto& redirect_host = config::get().net.redirect_host;
+            // the friend service lives on the game server ([Network] UplayProxy, host:port);
+            // without it, fall back to the redirect host as before
+            const auto& net = config::get().net;
+            const auto& proxy_host = net.uplay_proxy.empty() ? net.redirect_host : net.uplay_proxy;
 
-            if (redirect_host.empty())
+            if (proxy_host.empty())
             {
                 log_proxy_not_redirected("no redirect host configured");
                 return false;
             }
 
-            if (_stricmp(redirect_host.c_str(), ORIGINAL_HOST.data()) == 0)
+            if (_stricmp(proxy_host.c_str(), ORIGINAL_HOST.data()) == 0)
             {
                 logger::info("uplay proxy host fix: redirect host is the official host, nothing to do");
                 return true;
             }
 
-            uplay_proxy::s_replacement_url = std::format("{}{}", uplay_proxy::URL_SCHEME, redirect_host);
+            uplay_proxy::s_replacement_url = std::format("{}{}", uplay_proxy::URL_SCHEME, proxy_host);
 
             switch (patch_proxy_url(uplay_proxy::s_replacement_url))
             {

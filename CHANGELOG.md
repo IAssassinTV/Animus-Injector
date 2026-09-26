@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## v1.0.5 — 2026-09-26
+
+### Added
+- **AC3 `UplayProxy` option** (`[Network]`, default `animusnetwork.com:21006`). The friend list of
+  `uplay_r1_loader.dll` is now requested from this `host:port`, the game server's friend service (TCP
+  21006, next to its UDP login server), instead of the online config service. The server knows who is online, so friends' online states are correct.
+  An empty value falls back to `RedirectHost`.
+
+---
+
 ## v1.0.4 — 2026-09-24
 
 ### Fixed

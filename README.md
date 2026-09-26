@@ -86,6 +86,7 @@ FixXInputDetection=true
 ```ini
 [Network]
 RedirectHost=animusnetwork.com
+UplayProxy=animusnetwork.com:21006
 
 [Logging]
 Enabled=true
@@ -95,6 +96,8 @@ Level=info
 FixCpuAffinity=true
 FixSkipIntroVideos=true
 ```
+
+`UplayProxy` (AC3 only) is the `host:port` that the friend list of `uplay_r1_loader.dll` is requested from: the game server's friend service (TCP, on the same port number as its UDP login server), which serves friends, friend requests and online states. Leave it empty to use `RedirectHost` instead.
 
 ## Troubleshooting
 
